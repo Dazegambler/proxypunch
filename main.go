@@ -156,7 +156,7 @@ func get_host_ip(c net.UDPConn, relayAddr net.UDPAddr, buffer []byte, port int) 
 				ip := net.IP(buffer[:4])
 				fmt.Println("Connected. Ask your peer to connect to " + ip.String() + " on port " + strconv.Itoa(port) + " with proxypunch")
 			}
-			break
+			continue
 		}
 		if n != 6 {
 			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from relay. (size:"+strconv.Itoa(n)+")")
@@ -184,6 +184,7 @@ func addpeer(buffer []byte) {
 		Port: int(binary.BigEndian.Uint16(buffer[:2])),
 	}
 	Peers[peer.String()] = net.UDPAddr{IP: peer.IP, Port: peer.Port}
+	fmt.Println("New peer Connected:", peer)
 
 }
 
@@ -200,6 +201,14 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 			continue
 		}
 
+		if n > len(buffer)-1 {
+			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from peer. (size:"+strconv.Itoa(n)+")")
+			continue
+		}
+		if addr.IP.Equal(relayAddr.IP) && addr.Port == relayAddr.Port {
+			continue
+		}
+
 		//NEW PEER FOUND
 		if n == 6 {
 			//PACKET NOT FROM RELAY HOST
@@ -211,22 +220,14 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 			}
 			if localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP) && addr.Port == port {
 				addpeer(buffer)
-				fmt.Println("New peer connected:", addr)
+				//fmt.Println("New peer connected:", addr)
 				continue
 			}
 		}
 
-		if n > len(buffer)-1 {
-			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from peer. (size:"+strconv.Itoa(n)+")")
-			continue
-		}
-		if addr.IP.Equal(relayAddr.IP) && addr.Port == relayAddr.Port {
-			continue
-		}
-
 		//PP RECEIVED PACKET FROM PEER
 		//forward peer packets to host
-		if peer, exists := Peers[addr.String()]; exists {
+		if peer, exists := Peers[addr.String()]; exists && addr.Port == peer.Port {
 			if n != 0 && buffer[1] == 0xCC {
 				c.WriteToUDP(buffer[2:n+1], localAddr)
 			}
