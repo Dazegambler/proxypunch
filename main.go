@@ -19,6 +19,8 @@ const relayHost = "delthas.fr:14761"
 
 const defaultPort = 41254
 
+var Peers = make(map[string]net.UDPAddr)
+
 var _, localIpv4, _ = net.ParseCIDR("127.0.0.0/8")
 var _, localIpv6, _ = net.ParseCIDR("fc00::/7")
 
@@ -135,14 +137,6 @@ func client(host string, port int) {
 	}
 }
 
-type Peer struct {
-	Addr net.UDPAddr
-}
-
-func addpeer() {
-
-}
-
 func get_host_ip(c net.UDPConn, relayAddr net.UDPAddr, buffer []byte, port int) {
 	receivedIp := false
 	for {
@@ -168,21 +162,37 @@ func get_host_ip(c net.UDPConn, relayAddr net.UDPAddr, buffer []byte, port int) 
 			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from relay. (size:"+strconv.Itoa(n)+")")
 			continue
 		}
+		addpeer(buffer)
 		//6 bytes received means the packet contains the ip and port of peer
-		ip := make([]byte, 4)
-		copy(ip, buffer[2:6])
-		//PEER ADDRESS
-		var peer = net.UDPAddr{
-			IP:   net.IP(ip),
-			Port: int(binary.BigEndian.Uint16(buffer[:2])),
-		}
-		connectedPeers[peer.String()] = Peer{Addr: peer}
+		// ip := make([]byte, 4)
+		// copy(ip, buffer[2:6])
+		// //PEER ADDRESS
+		// var peer = net.UDPAddr{
+		// 	IP:   net.IP(ip),
+		// 	Port: int(binary.BigEndian.Uint16(buffer[:2])),
+		// }
+		// Peers[peer.String()] = {Addr: peer}
 		break
 	}
+}
+
+func addpeer(buffer []byte) {
+	ip := make([]byte, 4)
+	copy(ip, buffer[2:6])
+	var peer = net.UDPAddr{
+		IP:   net.IP(ip),
+		Port: int(binary.BigEndian.Uint16(buffer[:2])),
+	}
+	Peers[peer.String()] = net.UDPAddr{IP: peer.IP, Port: peer.Port}
 
 }
 
-func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte) {
+func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port int) {
+	localAddr := &net.UDPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: port,
+	}
+
 	for {
 		n, addr, err := c.ReadFromUDP(buffer[1:])
 		if err != nil {
@@ -196,20 +206,11 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte) {
 			if !addr.IP.Equal(relayAddr.IP) || addr.Port != relayAddr.Port {
 				continue
 			}
-
-			ip := make([]byte, 4)
-			copy(ip, buffer[2:6])
-			//PEER ADDRESS
-			remoteAddr = net.UDPAddr{
-				IP:   net.IP(ip),
-				Port: int(binary.BigEndian.Uint16(buffer[:2])),
-			}
-
-			if peer, exists := connectedPeers[remoteAddr.String()]; exists {
-				fmt.Println("Peer connected:", peer.Addr)
+			if _, exists := Peers[addr.String()]; exists {
 				continue
-			} else if localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP) && remoteAddr.Port == port {
-				connectedPeers[addr.String()] = Peer{Addr: remoteAddr}
+			}
+			if localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP) && addr.Port == port {
+				addpeer(buffer)
 				fmt.Println("New peer connected:", addr)
 				continue
 			}
@@ -224,21 +225,21 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte) {
 		}
 
 		//PP RECEIVED PACKET FROM PEER
-		if peer, exists := connectedPeers[addr.String()]; exists {
-			fmt.Println("Peer connected:", peer.Addr)
+		//forward peer packets to host
+		if peer, exists := Peers[addr.String()]; exists {
 			if n != 0 && buffer[1] == 0xCC {
 				c.WriteToUDP(buffer[2:n+1], localAddr)
 			}
 			continue
 		} else if (localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP)) && addr.Port == port {
 			buffer[0] = 0xCC
-			c.WriteToUDP(buffer[:n+1], &peer.Addr)
+			c.WriteToUDP(buffer[:n+1], &peer)
 		}
 
 		//NEW
-		// if peer, exists := connectedPeers[addr.String()]; exists {
+		// if peer, exists := Peers[addr.String()]; exists {
 		// 	if !peer.Found {
-		// 		connectedPeers[addr.String()] = Peer{Addr: peer.Addr, Found: true}
+		// 		Peers[addr.String()] = Peer{Addr: peer.Addr, Found: true}
 		// 		fmt.Println("Connected to peer:", addr)
 		// 	}
 		// 	if n != 0 && buffer[1] == 0xCC {
@@ -247,7 +248,7 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte) {
 		// 	continue
 		// }
 		// if localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP) {
-		// 	connectedPeers[addr.String()] = Peer{Addr: *addr, Found: true}
+		// 	Peers[addr.String()] = Peer{Addr: *addr, Found: true}
 		// 	fmt.Println("New peer connected:", addr)
 		// 	if n != 0 && buffer[1] == 0xCC {
 		// 		c.WriteToUDP(buffer[2:n+1], localAddr)
@@ -265,15 +266,15 @@ func server(port int) {
 	}
 	defer c.Close()
 
-	connectedPeers := make(map[string]Peer)
+	Peers := make(map[string]net.UDPAddr)
 
 	fmt.Println("Listening, start hosting on port " + strconv.Itoa(port))
 	fmt.Println("Connecting...")
 
-	localAddr := &net.UDPAddr{
-		IP:   net.IPv4(127, 0, 0, 1),
-		Port: port,
-	}
+	// localAddr := &net.UDPAddr{
+	// 	IP:   net.IPv4(127, 0, 0, 1),
+	// 	Port: port,
+	// }
 
 	relayAddr, err := net.ResolveUDPAddr("udp4", relayHost)
 	if err != nil {
@@ -296,8 +297,6 @@ func server(port int) {
 	}()
 	defer close(chRelay)
 
-	//SHOULD NOT BE NEEDED...
-	var remoteAddr net.UDPAddr
 	buffer := make([]byte, 4096)
 
 	//FIRST LOOP(till it gets your ip and the peer's ip)
@@ -313,9 +312,8 @@ func server(port int) {
 				return
 			default:
 			}
-			for i := 0; i < len(connectedPeers); i++ {
-				//iterate through each peer
-				c.WriteToUDP(punchPayload, &remoteAddr)
+			for _, h := range Peers {
+				c.WriteToUDP(punchPayload, &h)
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -324,7 +322,7 @@ func server(port int) {
 
 	//THE MAIN ISSUE IS NEW CONNECTIONS ARE BEING ADDED TO THE MAP OF PEERS
 
-	packet_handling()
+	packet_handling(*relayAddr, *c, buffer, port)
 
 	//LOOP TO MANAGE PACKET HANDLING
 
