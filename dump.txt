@@ -1,0 +1,115 @@
+func server(port int) {
+	c, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer c.Close()
+
+	fmt.Println("Listening, start hosting on port " + strconv.Itoa(port))
+	fmt.Println("Connecting...")
+
+	localAddr := &net.UDPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: port,
+	}
+
+	relayAddr, err := net.ResolveUDPAddr("udp4", relayHost)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	chRelay := make(chan struct{})
+	go func() {
+		relayPayload := []byte{byte(port >> 8), byte(port)}
+		for {
+			select {
+			case <-chRelay:
+				return
+			default:
+			}
+			c.WriteToUDP(relayPayload, relayAddr)
+			time.Sleep(500 * time.Millisecond)
+		}
+	}()
+	defer close(chRelay)
+
+	var remoteAddr net.UDPAddr
+	buffer := make([]byte, 4096)
+
+	receivedIp := false
+	for {
+		n, addr, err := c.ReadFromUDP(buffer)
+		if err != nil {
+			// err is thrown if the buffer is too small
+			continue
+		}
+		//If Server failed to start
+		if !addr.IP.Equal(relayAddr.IP) || addr.Port != relayAddr.Port {
+			continue
+		}
+		if n == 4 {
+			if !receivedIp {
+				receivedIp = true
+				ip := net.IP(buffer[:4])
+				fmt.Println("Connected. Ask your peer to connect to " + ip.String() + " on port " + strconv.Itoa(port) + " with proxypunch")
+			}
+			continue
+		}
+		if n != 6 {
+			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from relay. (size:"+strconv.Itoa(n)+")")
+			continue
+		}
+		ip := make([]byte, 4)
+		copy(ip, buffer[2:6])
+		remoteAddr = net.UDPAddr{
+			IP:   net.IP(ip),
+			Port: int(binary.BigEndian.Uint16(buffer[:2])),
+		}
+		break
+	}
+
+	chPunch := make(chan struct{})
+	go func() {
+		punchPayload := []byte{0xCD}
+		for {
+			select {
+			case <-chPunch:
+				return
+			default:
+			}
+			c.WriteToUDP(punchPayload, &remoteAddr)
+			time.Sleep(500 * time.Millisecond)
+		}
+	}()
+	defer close(chPunch)
+
+	foundPeer := false
+	for {
+		n, addr, err := c.ReadFromUDP(buffer[1:])
+		if err != nil {
+			// err is thrown if the buffer is too small
+			continue
+		}
+		if n > len(buffer)-1 {
+			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from peer. (size:"+strconv.Itoa(n)+")")
+			continue
+		}
+		if addr.IP.Equal(relayAddr.IP) && addr.Port == relayAddr.Port {
+			continue
+		}
+		//TARGET
+		if addr.IP.Equal(remoteAddr.IP) && addr.Port == remoteAddr.Port {
+			if !foundPeer {
+				foundPeer = true
+				fmt.Println("Connected to peer")
+			}
+			if n != 0 && buffer[1] == 0xCC {
+				c.WriteToUDP(buffer[2:n+1], localAddr)
+			}
+		} else if (localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP)) && addr.Port == port {
+			buffer[0] = 0xCC
+			c.WriteToUDP(buffer[:n+1], &remoteAddr)
+		}
+		//END OF TARGET
+	}
+}
