@@ -19,7 +19,7 @@ const relayHost = "delthas.fr:14761"
 
 const defaultPort = 41254
 
-var Peers = make(map[string]net.UDPAddr)
+var Peers = make(map[string]Peer)
 
 var _, localIpv4, _ = net.ParseCIDR("127.0.0.0/8")
 var _, localIpv6, _ = net.ParseCIDR("fc00::/7")
@@ -30,6 +30,11 @@ type Config struct {
 	Host                string `yaml:"remote_host"`
 	RemotePort          int    `yaml:"remote_port"`
 	DownloadedAutopunch bool   `yaml:"downloaded_autopunch"`
+}
+
+type Peer struct {
+	addr  net.UDPAddr
+	Found bool
 }
 
 func client(host string, port int) {
@@ -183,7 +188,8 @@ func addpeer(buffer []byte) {
 		IP:   net.IP(ip),
 		Port: int(binary.BigEndian.Uint16(buffer[:2])),
 	}
-	Peers[peer.String()] = net.UDPAddr{IP: peer.IP, Port: peer.Port}
+	var udp net.UDPAddr = net.UDPAddr{IP: peer.IP, Port: peer.Port}
+	Peers[peer.String()] = Peer{addr: udp}
 	fmt.Println("New peer Connected:", peer)
 
 }
@@ -200,7 +206,6 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 			// err is thrown if the buffer is too small
 			continue
 		}
-
 		if n > len(buffer)-1 {
 			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from peer. (size:"+strconv.Itoa(n)+")")
 			continue
@@ -208,33 +213,22 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 		if addr.IP.Equal(relayAddr.IP) && addr.Port == relayAddr.Port {
 			continue
 		}
-
-		//NEW PEER FOUND
-		if n == 6 {
-			//PACKET NOT FROM RELAY HOST
-			if !addr.IP.Equal(relayAddr.IP) || addr.Port != relayAddr.Port {
-				continue
-			}
-			if _, exists := Peers[addr.String()]; exists {
-				continue
-			}
-			if localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP) && addr.Port == port {
-				addpeer(buffer)
-				//fmt.Println("New peer connected:", addr)
-				continue
-			}
-		}
+		//Check for new peers
 
 		//PP RECEIVED PACKET FROM PEER
 		//forward peer packets to host
-		if peer, exists := Peers[addr.String()]; exists && addr.Port == peer.Port {
+		if peer, exists := Peers[addr.String()]; exists && addr.Port == peer.addr.Port {
+			if !peer.Found {
+				peer.Found = true
+				fmt.Println("Peer Connected:", peer.addr.IP)
+			}
 			if n != 0 && buffer[1] == 0xCC {
 				c.WriteToUDP(buffer[2:n+1], localAddr)
 			}
 			continue
 		} else if (localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP)) && addr.Port == port {
 			buffer[0] = 0xCC
-			c.WriteToUDP(buffer[:n+1], &peer)
+			c.WriteToUDP(buffer[:n+1], &peer.addr)
 		}
 
 		//NEW
