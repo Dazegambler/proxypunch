@@ -21,6 +21,8 @@ const defaultPort = 41254
 
 var Peers = make(map[string]Peer)
 
+var mainPeer net.UDPAddr
+
 var _, localIpv4, _ = net.ParseCIDR("127.0.0.0/8")
 var _, localIpv6, _ = net.ParseCIDR("fc00::/7")
 
@@ -167,7 +169,14 @@ func get_host_ip(c net.UDPConn, relayAddr net.UDPAddr, buffer []byte, port int) 
 			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from relay. (size:"+strconv.Itoa(n)+")")
 			continue
 		}
-		addpeer(buffer)
+		ip := make([]byte, 4)
+		copy(ip, buffer[2:6])
+		//PEER ADDRESS
+		mainPeer = net.UDPAddr{
+			IP:   net.IP(ip),
+			Port: int(binary.BigEndian.Uint16(buffer[:2])),
+		}
+		//addpeer(buffer)
 		//6 bytes received means the packet contains the ip and port of peer
 		// ip := make([]byte, 4)
 		// copy(ip, buffer[2:6])
@@ -177,7 +186,6 @@ func get_host_ip(c net.UDPConn, relayAddr net.UDPAddr, buffer []byte, port int) 
 		// 	Port: int(binary.BigEndian.Uint16(buffer[:2])),
 		// }
 		// Peers[peer.String()] = {Addr: peer}
-		break
 	}
 }
 
@@ -190,8 +198,7 @@ func addpeer(buffer []byte) {
 	}
 	var udp net.UDPAddr = net.UDPAddr{IP: peer.IP, Port: peer.Port}
 	Peers[peer.String()] = Peer{addr: udp}
-	fmt.Println("New peer Connected:", peer)
-
+	fmt.Println("New peer Connected:", peer.IP)
 }
 
 func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port int) {
@@ -200,6 +207,7 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 		Port: port,
 	}
 
+	foundmain := false
 	for {
 		n, addr, err := c.ReadFromUDP(buffer[1:])
 		if err != nil {
@@ -215,12 +223,25 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 		}
 		//Check for new peers
 
+		if n == 6 {
+			addpeer(buffer)
+			continue
+		}
+
 		//PP RECEIVED PACKET FROM PEER
 		//forward peer packets to host
-		if peer, exists := Peers[addr.String()]; exists && addr.Port == peer.addr.Port {
+		if addr.IP.Equal(mainPeer.IP) && addr.Port == mainPeer.Port {
+			if !foundmain {
+				foundmain = true
+				fmt.Println("Connected to main peer")
+			}
+			if n != 0 && buffer[1] == 0xCC {
+				c.WriteToUDP(buffer[2:n+1], localAddr)
+			}
+		} else if peer, exists := Peers[addr.String()]; exists && addr.Port == peer.addr.Port {
 			if !peer.Found {
 				peer.Found = true
-				fmt.Println("Peer Connected:", peer.addr.IP)
+				fmt.Println("Connected to Peer:", peer.addr.IP)
 			}
 			if n != 0 && buffer[1] == 0xCC {
 				c.WriteToUDP(buffer[2:n+1], localAddr)
@@ -228,9 +249,9 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 			continue
 		} else if (localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP)) && addr.Port == port {
 			buffer[0] = 0xCC
-			c.WriteToUDP(buffer[:n+1], &peer.addr)
+			c.WriteToUDP(buffer[:n+1], &mainPeer)
+			continue
 		}
-
 		//NEW
 		// if peer, exists := Peers[addr.String()]; exists {
 		// 	if !peer.Found {
@@ -315,7 +336,7 @@ func server(port int) {
 	}()
 	defer close(chPunch)
 
-	//THE MAIN ISSUE IS NEW CONNECTIONS ARE BEING ADDED TO THE MAP OF PEERS
+	//THE MAIN ISSUE IS NEW CONNECTIONS ARE NOT BEING ADDED TO THE MAP OF PEERS
 
 	packet_handling(*relayAddr, *c, buffer, port)
 
