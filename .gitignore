@@ -1,2 +1,4 @@
 /.idea/
 /proxypunch.yml
+*.exe
+*.run
