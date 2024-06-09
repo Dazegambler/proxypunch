@@ -24,7 +24,7 @@ type Peer struct {
 	Found bool
 }
 
-var Peers = make(map[string]Peer)
+var Peers map[string]Peer = make(map[string]Peer)
 
 //var mainPeer net.UDPAddr
 
@@ -169,7 +169,6 @@ func get_host_ip(c net.UDPConn, relayAddr net.UDPAddr, buffer []byte, port int) 
 			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from relay. (size:"+strconv.Itoa(n)+")")
 			continue
 		}
-		fmt.Println("Connection attempt detected...")
 		addpeer(buffer)
 		break
 		// ip := make([]byte, 4)
@@ -198,8 +197,11 @@ func addpeer(buffer []byte) {
 		Port: int(binary.BigEndian.Uint16(buffer[:2])),
 	}
 	var p = Peer{addr: peer, Found: false}
-	Peers[p.addr.String()] = p
-	fmt.Println("New peer Connected:", peer.IP)
+	if _, Exists := Peers[p.addr.IP.String()]; !Exists {
+		Peers[p.addr.IP.String()] = p
+		//fmt.Println(len(Peers))
+		fmt.Println("New peer Connected:", p.addr)
+	}
 }
 
 func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port int) {
@@ -222,26 +224,24 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 		}
 
 		if addr.IP.Equal(relayAddr.IP) && addr.Port == relayAddr.Port {
+			if n == 6 {
+				addpeer(buffer)
+			}
 			continue
 		}
 
-		fmt.Println("Packet...", addr)
-		for _, peer := range Peers {
-			if addr.IP.Equal(peer.addr.IP) && addr.Port == peer.addr.Port {
-				if !peer.Found {
-					peer.Found = true
-					fmt.Println("Connected to Peer:", peer.addr.IP)
-				}
-				if n != 0 && buffer[1] == 0xCC {
-					fmt.Println("B...")
-					c.WriteToUDP(buffer[2:n+1], localAddr)
-				}
-				break
-			} else if (localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP)) && addr.Port == port {
-				fmt.Println("A...")
-				buffer[0] = 0xCC
-				c.WriteToUDP(buffer[:n+1], addr)
+		if _, exists := Peers[addr.IP.String()]; exists {
+			if n != 0 && buffer[1] == 0xCC {
+				c.WriteToUDP(buffer[2:n+1], localAddr)
 			}
+			continue
+		}
+		if localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP) {
+			buffer[0] = 0xCC
+			for _, peer := range Peers {
+				c.WriteToUDP(buffer[:n+1], &peer.addr)
+			}
+			continue
 		}
 		//Check for new peers
 
@@ -304,7 +304,7 @@ func server(port int) {
 	}
 	defer c.Close()
 
-	Peers := make(map[string]net.UDPAddr)
+	//Peers := make(map[string]Peer)
 
 	fmt.Println("Listening, start hosting on port " + strconv.Itoa(port))
 	fmt.Println("Connecting...")
@@ -350,10 +350,10 @@ func server(port int) {
 				return
 			default:
 			}
+			//fmt.Println("a")
+			//NOT BEING CALLED
 			for _, h := range Peers {
-				fmt.Println("hello")
-				//fmt.Println("To:", h)
-				c.WriteToUDP(punchPayload, &h)
+				c.WriteToUDP(punchPayload, &h.addr)
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -537,6 +537,9 @@ func main() {
 	saveMode := mode == ""
 	saveHost := host == ""
 	savePort := port == 0
+
+	mode = "s"
+	port = 10555
 
 	for mode != "s" && mode != "server" && mode != "c" && mode != "client" {
 		if config.Mode != "" {
