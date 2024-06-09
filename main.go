@@ -200,7 +200,7 @@ func addpeer(buffer []byte) {
 	if _, Exists := Peers[p.addr.IP.String()]; !Exists {
 		Peers[p.addr.IP.String()] = p
 		//fmt.Println(len(Peers))
-		fmt.Println("New peer Connected:", p.addr)
+		fmt.Println("New peer Connected:", p.addr.IP)
 	}
 }
 
