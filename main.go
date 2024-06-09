@@ -538,9 +538,6 @@ func main() {
 	saveHost := host == ""
 	savePort := port == 0
 
-	mode = "s"
-	port = 10777
-
 	for mode != "s" && mode != "server" && mode != "c" && mode != "client" {
 		if config.Mode != "" {
 			fmt.Println("Mode? s(erver) / c(lient) [" + config.Mode + "]")
