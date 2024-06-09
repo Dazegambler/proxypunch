@@ -223,10 +223,12 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 			continue
 		}
 
-		if addr.IP.Equal(relayAddr.IP) && addr.Port == relayAddr.Port {
+		if addr.IP.Equal(relayAddr.IP) || addr.Port == relayAddr.Port {
 			if n == 6 {
 				addpeer(buffer)
+				continue
 			}
+		} else if addr.IP.Equal(relayAddr.IP) && addr.Port == relayAddr.Port {
 			continue
 		}
 
