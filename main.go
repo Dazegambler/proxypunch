@@ -539,7 +539,7 @@ func main() {
 	savePort := port == 0
 
 	mode = "s"
-	port = 10555
+	port = 10777
 
 	for mode != "s" && mode != "server" && mode != "c" && mode != "client" {
 		if config.Mode != "" {
