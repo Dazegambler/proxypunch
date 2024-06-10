@@ -15,7 +15,7 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-const relayHost = "delthas.fr:14761"
+const relayHost = "127.0.0.1:14761" //"delthas.fr:14761"
 
 const defaultPort = 41254
 
@@ -169,7 +169,7 @@ func get_host_ip(c net.UDPConn, relayAddr net.UDPAddr, buffer []byte, port int) 
 			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from relay. (size:"+strconv.Itoa(n)+")")
 			continue
 		}
-		addpeer(buffer)
+		addmainpeer(buffer)
 		break
 		// ip := make([]byte, 4)
 		// copy(ip, buffer[2:6])
@@ -191,6 +191,21 @@ func get_host_ip(c net.UDPConn, relayAddr net.UDPAddr, buffer []byte, port int) 
 
 func addpeer(buffer []byte) {
 	ip := make([]byte, 4)
+	copy(ip, buffer[3:7])
+	var peer = net.UDPAddr{
+		IP:   net.IP(ip),
+		Port: int(binary.BigEndian.Uint16(buffer[1:3])),
+	}
+	var p = Peer{addr: peer, Found: false}
+	if _, Exists := Peers[p.addr.IP.String()]; !Exists {
+		Peers[p.addr.IP.String()] = p
+		//fmt.Println(len(Peers))
+		fmt.Println("New peer Connected:", p.addr)
+	}
+}
+
+func addmainpeer(buffer []byte) {
+	ip := make([]byte, 4)
 	copy(ip, buffer[2:6])
 	var peer = net.UDPAddr{
 		IP:   net.IP(ip),
@@ -200,7 +215,7 @@ func addpeer(buffer []byte) {
 	if _, Exists := Peers[p.addr.IP.String()]; !Exists {
 		Peers[p.addr.IP.String()] = p
 		//fmt.Println(len(Peers))
-		fmt.Println("New peer Connected:", p.addr.IP)
+		fmt.Println("New peer Connected:", p.addr)
 	}
 }
 
