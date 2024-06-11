@@ -2,4 +2,4 @@
 /proxypunch.yml
 *.exe
 *.run
-*.dockerfile
+Dockerfile

@@ -15,7 +15,7 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-const relayHost = "127.0.0.1:14761" //"delthas.fr:14761"
+const relayHost = "delthas.fr:14761"
 
 const defaultPort = 41254
 
