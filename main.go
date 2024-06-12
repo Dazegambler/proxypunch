@@ -94,7 +94,7 @@ func client(host string, port int) {
 			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from relay. (size:"+strconv.Itoa(n)+")")
 			continue
 		}
-		remoteAddr.Port = int(binary.BigEndian.Uint16(buffer[:2]))
+		remoteAddr.Port = int(binary.BigEndian.Uint16(buffer[:2])) //[1:3]????
 		break
 	}
 
