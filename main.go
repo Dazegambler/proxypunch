@@ -131,7 +131,7 @@ func client(host string, port int) {
 		if addr.IP.Equal(remoteAddr.IP) && addr.Port == remoteAddr.Port {
 			if !foundPeer {
 				foundPeer = true
-				fmt.Println("Connected to peer")
+				fmt.Println("Connected to peer:", addr.Port)
 			}
 			if n != 0 && localAddr.Port != 0 && buffer[1] == 0xCC {
 				c.WriteToUDP(buffer[2:n+1], &localAddr)
@@ -198,6 +198,7 @@ func addpeer(buffer []byte) {
 	}
 	var p = Peer{addr: peer, Found: false}
 	if _, Exists := Peers[p.addr.IP.String()]; !Exists {
+		fmt.Println("sec:", buffer[:10])
 		Peers[p.addr.IP.String()] = p
 		//fmt.Println(len(Peers))
 		fmt.Println("New peer Connected:", p.addr)
@@ -213,6 +214,7 @@ func addmainpeer(buffer []byte) {
 	}
 	var p = Peer{addr: peer, Found: false}
 	if _, Exists := Peers[p.addr.IP.String()]; !Exists {
+		fmt.Println("pri:", buffer[:10])
 		Peers[p.addr.IP.String()] = p
 		//fmt.Println(len(Peers))
 		fmt.Println("New peer Connected:", p.addr)
@@ -554,6 +556,10 @@ func main() {
 	saveMode := mode == ""
 	saveHost := host == ""
 	savePort := port == 0
+
+	// mode = "c"
+	// host = "181.46.178.236"
+	// port = 10800
 
 	for mode != "s" && mode != "server" && mode != "c" && mode != "client" {
 		if config.Mode != "" {
