@@ -94,6 +94,7 @@ func client(host string, port int) {
 			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from relay. (size:"+strconv.Itoa(n)+")")
 			continue
 		}
+		fmt.Println("Endian:", buffer[:10])
 		remoteAddr.Port = int(binary.BigEndian.Uint16(buffer[:2])) //[1:3]????
 		break
 	}
@@ -131,7 +132,7 @@ func client(host string, port int) {
 		if addr.IP.Equal(remoteAddr.IP) && addr.Port == remoteAddr.Port {
 			if !foundPeer {
 				foundPeer = true
-				fmt.Println("Connected to peer:", addr.Port)
+				fmt.Println("Connected to peer:", addr)
 			}
 			if n != 0 && localAddr.Port != 0 && buffer[1] == 0xCC {
 				c.WriteToUDP(buffer[2:n+1], &localAddr)
@@ -252,6 +253,11 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 		if _, exists := Peers[addr.IP.String()]; exists {
 			if n != 0 && buffer[1] == 0xCC {
 				c.WriteToUDP(buffer[2:n+1], localAddr)
+				for _, peer := range Peers {
+					if !addr.IP.Equal(peer.addr.IP) {
+						c.WriteToUDP(buffer, &peer.addr)
+					}
+				}
 			}
 			continue
 		}
