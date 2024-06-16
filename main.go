@@ -95,7 +95,7 @@ func client(host string, port int) {
 			continue
 		}
 		fmt.Println("Endian:", buffer[:10])
-		remoteAddr.Port = int(binary.BigEndian.Uint16(buffer[:2])) //[1:3]????
+		remoteAddr.Port = int(binary.BigEndian.Uint16(buffer[:2]))
 		break
 	}
 
@@ -109,6 +109,9 @@ func client(host string, port int) {
 			default:
 			}
 			c.WriteToUDP(punchPayload, remoteAddr)
+			for _, h := range Peers {
+				c.WriteToUDP(punchPayload, &h.addr)
+			}
 			time.Sleep(500 * time.Millisecond)
 		}
 	}()
@@ -129,19 +132,35 @@ func client(host string, port int) {
 		if addr.IP.Equal(relayAddr.IP) && addr.Port == relayAddr.Port {
 			continue
 		}
+
 		if addr.IP.Equal(remoteAddr.IP) && addr.Port == remoteAddr.Port {
 			if !foundPeer {
 				foundPeer = true
 				fmt.Println("Connected to peer:", addr)
 			}
-			if n != 0 && localAddr.Port != 0 && buffer[1] == 0xCC {
+			if n == 6 {
+				addclientpeer(buffer)
+				continue
+			} else if n != 0 && localAddr.Port != 0 && buffer[1] == 0xCC {
 				c.WriteToUDP(buffer[2:n+1], &localAddr)
 			}
-		} else if localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP) {
+			continue
+		}
+		if localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP) {
 			localAddr = *addr
 			buffer[0] = 0xCC
 			c.WriteToUDP(buffer[:n+1], remoteAddr)
+			continue
 		}
+
+		//For ref
+		// if _, exists := Peers[addr.IP.String()]; exists {
+		// 	if n != 0 && buffer[1] == 0xCC {
+		// 		c.WriteToUDP(buffer[2:n+1], &localAddr)
+		// 	}
+		// 	continue
+		// }
+
 	}
 }
 
@@ -187,6 +206,35 @@ func get_host_ip(c net.UDPConn, relayAddr net.UDPAddr, buffer []byte, port int) 
 		// 	Port: int(binary.BigEndian.Uint16(buffer[:2])),
 		// }
 		// Peers[peer.String()] = {Addr: peer}
+	}
+}
+
+func sendpeer(sendto net.UDPAddr, c net.UDPConn, peer Peer) {
+	buffer := make([]byte, 6)
+	port := make([]byte, 2)
+	binary.BigEndian.PutUint16(port, uint16(peer.addr.Port))
+	ip := net.ParseIP(peer.addr.IP.String()).To4()
+	copy(buffer, port)
+	copy(buffer[2:], ip)
+	c.WriteToUDP(buffer, &sendto)
+}
+
+func addclientpeer(buffer []byte) {
+	ip := make([]byte, 4)
+	if localIpv4.Contains(ip) || localIpv6.Contains(ip) {
+		return
+	}
+	copy(ip, buffer[3:7])
+	var peer = net.UDPAddr{
+		IP:   net.IP(ip),
+		Port: int(binary.BigEndian.Uint16(buffer[1:3])),
+	}
+	var p = Peer{addr: peer, Found: false}
+	if _, Exists := Peers[p.addr.IP.String()]; !Exists {
+		fmt.Println("clint:", buffer[:10])
+		Peers[p.addr.IP.String()] = p
+		//fmt.Println(len(Peers))
+		fmt.Println("New client detected:", p.addr)
 	}
 }
 
@@ -244,6 +292,10 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 		if addr.IP.Equal(relayAddr.IP) || addr.Port == relayAddr.Port {
 			if n == 6 {
 				addpeer(buffer)
+				for _, peer := range Peers {
+					sendpeer(peer.addr, c, peer)
+					//c.WriteToUDP(buffer, &peer.addr)
+				}
 				continue
 			}
 		} else if addr.IP.Equal(relayAddr.IP) && addr.Port == relayAddr.Port {
@@ -253,11 +305,11 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 		if _, exists := Peers[addr.IP.String()]; exists {
 			if n != 0 && buffer[1] == 0xCC {
 				c.WriteToUDP(buffer[2:n+1], localAddr)
-				for _, peer := range Peers {
-					if !addr.IP.Equal(peer.addr.IP) {
-						c.WriteToUDP(buffer, &peer.addr)
-					}
-				}
+				// for _, peer := range Peers {
+				// 	if !addr.IP.Equal(peer.addr.IP) {
+				// 		c.WriteToUDP(buffer, &peer.addr)
+				// 	}
+				// }
 			}
 			continue
 		}
