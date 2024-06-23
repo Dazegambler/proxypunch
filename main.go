@@ -270,11 +270,8 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 		if peer, exists := Peers[addr.IP.String()]; exists {
 			if n != 0 && buffer[1] == 0xCC {
 				// if connection request is received
-				if buffer[4] == 87 {
-					if !peer.Connection {
-						peer.Connection = true
-						fmt.Println("Peer connected ingame:", peer.addr.IP)
-					}
+				if buffer[3] == 87 {
+					fmt.Println("Connection Request:", peer.addr.IP)
 				}
 				c.WriteToUDP(buffer[2:n+1], localAddr)
 				// for _, peer := range Peers {
@@ -291,7 +288,9 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 			if buffer[1] == 4 {
 				for _, peer := range Peers {
 					if !peer.Connection {
+						peer.Connection = true
 						c.WriteToUDP(buffer[:n+1], &peer.addr)
+						fmt.Println("Connection Ingame:", peer.addr.IP)
 					}
 				}
 				continue
