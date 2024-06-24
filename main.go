@@ -20,9 +20,8 @@ const relayHost = "delthas.fr:14761"
 const defaultPort = 41254
 
 type Peer struct {
-	addr       net.UDPAddr
-	Found      bool
-	Connection bool
+	addr  net.UDPAddr
+	Found bool
 }
 
 var Peers map[string]Peer = make(map[string]Peer)
@@ -119,6 +118,10 @@ func client(host string, port int) {
 	defer close(chPunch)
 
 	foundPeer := false
+	//0 start
+	//1 requesting connection
+	//2 connection request received
+	state := 0
 	var localAddr net.UDPAddr
 	for {
 		n, addr, err := c.ReadFromUDP(buffer[1:])
@@ -133,13 +136,34 @@ func client(host string, port int) {
 		if addr.IP.Equal(relayAddr.IP) && addr.Port == relayAddr.Port {
 			continue
 		}
-
+		//
 		if addr.IP.Equal(remoteAddr.IP) && addr.Port == remoteAddr.Port {
 			if !foundPeer {
 				foundPeer = true
 				fmt.Println("Connected to peer:", addr)
 			}
 			if n != 0 && localAddr.Port != 0 && buffer[1] == 0xCC {
+				//connection accepted packet
+				switch state {
+				case 0: //start
+					if buffer[1] == 4 && buffer[3] == 87 {
+						c.WriteToUDP(buffer[2:n+1], &localAddr)
+						state = 1
+					}
+				case 1: //Connection Accepted
+					if buffer[3] == 0 {
+						c.WriteToUDP(buffer[2:n+1], &localAddr)
+						continue
+					}
+				default:
+					break
+				}
+				// if buffer[1] == 4 && buffer[3] == 87 && state == 1 {
+				// 	c.WriteToUDP(buffer[2:n+1], &localAddr)
+				// 	state = 2
+				// 	continue
+				// }
+				//normal game packet
 				c.WriteToUDP(buffer[2:n+1], &localAddr)
 			}
 			continue
@@ -269,9 +293,9 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 
 		if peer, exists := Peers[addr.IP.String()]; exists {
 			if n != 0 && buffer[1] == 0xCC {
-				// if connection request is received
-				if buffer[3] == 87 {
-					fmt.Println("Connection Request:", peer.addr.IP)
+				if !peer.Found {
+					peer.Found = true
+					fmt.Println("Connected to peer:", peer.addr)
 				}
 				c.WriteToUDP(buffer[2:n+1], localAddr)
 				// for _, peer := range Peers {
@@ -284,21 +308,8 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 		}
 		if localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP) {
 			buffer[0] = 0xCC
-			//if connection request is sent
-			if buffer[1] == 4 {
-				for _, peer := range Peers {
-					if !peer.Connection {
-						peer.Connection = true
-						c.WriteToUDP(buffer[:n+1], &peer.addr)
-						fmt.Println("Connection Ingame:", peer.addr.IP)
-					}
-				}
-				continue
-			}
 			for _, peer := range Peers {
-				if peer.Connection {
-					c.WriteToUDP(buffer[:n+1], &peer.addr)
-				}
+				c.WriteToUDP(buffer[:n+1], &peer.addr)
 			}
 			continue
 		}
