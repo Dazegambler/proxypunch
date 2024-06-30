@@ -9,5 +9,7 @@ require (
 
 require (
 	github.com/matryer/is v1.2.0 // indirect
+	golang.org/x/net v0.26.0 // indirect
+	golang.org/x/sys v0.21.0 // indirect
 	gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 // indirect
 )
