@@ -2,30 +2,31 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
 	"net"
+	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
-	"golang.org/x/net/ipv4"
+	"github.com/machinebox/progress"
 	"gopkg.in/yaml.v2"
 )
 
 const relayHost = "delthas.fr:14761"
 
 const defaultPort = 41254
-
-type Peer struct {
-	addr  net.UDPAddr
-	Found bool
-}
-
-var Peers map[string]Peer = make(map[string]Peer)
 
 var _, localIpv4, _ = net.ParseCIDR("127.0.0.0/8")
 var _, localIpv6, _ = net.ParseCIDR("fc00::/7")
@@ -107,9 +108,6 @@ func client(host string, port int) {
 			default:
 			}
 			c.WriteToUDP(punchPayload, remoteAddr)
-			for _, h := range Peers {
-				c.WriteToUDP(punchPayload, &h.addr)
-			}
 			time.Sleep(500 * time.Millisecond)
 		}
 	}()
@@ -130,94 +128,74 @@ func client(host string, port int) {
 		if addr.IP.Equal(relayAddr.IP) && addr.Port == relayAddr.Port {
 			continue
 		}
-		//
 		if addr.IP.Equal(remoteAddr.IP) && addr.Port == remoteAddr.Port {
 			if !foundPeer {
 				foundPeer = true
-				fmt.Println("Connected to peer:", addr)
+				fmt.Println("Connected to peer")
 			}
-			fmt.Println("a")
 			if n != 0 && localAddr.Port != 0 && buffer[1] == 0xCC {
 				c.WriteToUDP(buffer[2:n+1], &localAddr)
 			}
-			continue
-		}
-		if localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP) {
+		} else if localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP) {
 			localAddr = *addr
 			buffer[0] = 0xCC
 			c.WriteToUDP(buffer[:n+1], remoteAddr)
-			continue
 		}
-
-		//For ref
-		// if _, exists := Peers[addr.IP.String()]; exists {
-		// 	if n != 0 && buffer[1] == 0xCC {
-		// 		c.WriteToUDP(buffer[2:n+1], &localAddr)
-		// 	}
-		// 	continue
-		// }
-
 	}
 }
 
-// func get_host_ip(c net.UDPConn, relayAddr net.UDPAddr, buffer []byte, port int) {
-// 	receivedIp := false
-// 	for {
-// 		n, addr, err := c.ReadFromUDP(buffer)
-// 		if err != nil {
-// 			// err is thrown if the buffer is too small
-// 			continue
-// 		}
-// 		//If Server failed to start
-// 		if !addr.IP.Equal(relayAddr.IP) || addr.Port != relayAddr.Port {
-// 			continue
-// 		}
-// 		// 4 bytes received means the packet contained the host ip
-// 		if n == 4 {
-// 			if !receivedIp {
-// 				receivedIp = true
-// 				ip := net.IP(buffer[:4])
-// 				fmt.Println("Connected. Ask your peer to connect to " + ip.String() + " on port " + strconv.Itoa(port) + " with proxypunch")
-// 			}
-// 			continue
-// 		}
-// 		if n != 6 {
-// 			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from relay. (size:"+strconv.Itoa(n)+")")
-// 			continue
-// 		}
-// 		addmainpeer(buffer)
-// 		break
-// 		// ip := make([]byte, 4)
-// 		// copy(ip, buffer[2:6])
-// 		// mainPeer = net.UDPAddr{
-// 		// 	IP:   net.IP(ip),
-// 		// 	Port: int(binary.BigEndian.Uint16(buffer[:2])),
-// 		// }
-// 		//6 bytes received means the packet contains the ip and port of peer
-// 		// ip := make([]byte, 4)
-// 		// copy(ip, buffer[2:6])
-// 		// //PEER ADDRESS
-// 		// var peer = net.UDPAddr{
-// 		// 	IP:   net.IP(ip),
-// 		// 	Port: int(binary.BigEndian.Uint16(buffer[:2])),
-// 		// }
-// 		// Peers[peer.String()] = {Addr: peer}
-// 	}
-// }
+func server(port int) {
+	c, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer c.Close()
 
-func get_host_ip(c net.PacketConn, relayAddr net.UDPAddr, buffer []byte, port int) {
+	fmt.Println("Listening, start hosting on port " + strconv.Itoa(port))
+	fmt.Println("Connecting...")
+
+	localAddr := &net.UDPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: port,
+	}
+
+	relayAddr, err := net.ResolveUDPAddr("udp4", relayHost)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	chRelay := make(chan struct{})
+	go func() {
+		relayPayload := []byte{byte(port >> 8), byte(port)}
+		for {
+			select {
+			case <-chRelay:
+				return
+			default:
+			}
+			c.WriteToUDP(relayPayload, relayAddr)
+			time.Sleep(500 * time.Millisecond)
+		}
+	}()
+	defer close(chRelay)
+
+	buffer := make([]byte, 4096)
+	type Peer struct {
+		addr  net.UDPAddr
+		Found bool
+	}
+	peers := make(map[string]Peer)
+
 	receivedIp := false
 	for {
-		n, addr, err := c.ReadFrom(buffer)
+		n, addr, err := c.ReadFromUDP(buffer)
 		if err != nil {
 			// err is thrown if the buffer is too small
 			continue
 		}
-		//If Server failed to start
 		if !addr.IP.Equal(relayAddr.IP) || addr.Port != relayAddr.Port {
 			continue
 		}
-		// 4 bytes received means the packet contained the host ip
 		if n == 4 {
 			if !receivedIp {
 				receivedIp = true
@@ -230,112 +208,36 @@ func get_host_ip(c net.PacketConn, relayAddr net.UDPAddr, buffer []byte, port in
 			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from relay. (size:"+strconv.Itoa(n)+")")
 			continue
 		}
-		addmainpeer(buffer)
+		ip := make([]byte, 4)
+		copy(ip, buffer[2:6])
+		first_addr := net.IP(ip)
+		peers[addr.String()] = Peer{
+			addr: net.UDPAddr{
+				IP:   first_addr,
+				Port: int(binary.BigEndian.Uint16(buffer[:2])),
+			},
+			Found: false,
+		}
+		fmt.Println("Peer attempting Connection:", first_addr)
 		break
 	}
-}
 
-func addpeer(buffer []byte) {
-	ip := make([]byte, 4)
-	copy(ip, buffer[3:7])
-	var peer = net.UDPAddr{
-		IP:   net.IP(ip),
-		Port: int(binary.BigEndian.Uint16(buffer[1:3])),
-	}
-	var p = Peer{addr: peer, Found: false}
-	if _, Exists := Peers[p.addr.IP.String()]; !Exists {
-		fmt.Println("sec:", buffer[:10])
-		Peers[p.addr.IP.String()] = p
-		//fmt.Println(len(Peers))
-		fmt.Println("New peer Connected:", p.addr)
-	}
-}
-
-func addmainpeer(buffer []byte) {
-	ip := make([]byte, 4)
-	copy(ip, buffer[2:6])
-	var peer = net.UDPAddr{
-		IP:   net.IP(ip),
-		Port: int(binary.BigEndian.Uint16(buffer[:2])),
-	}
-	var p = Peer{addr: peer, Found: false}
-	if _, Exists := Peers[p.addr.IP.String()]; !Exists {
-		Peers[p.addr.IP.String()] = p
-		//fmt.Println(len(Peers))
-		fmt.Println("New peer Connected:", p.addr)
-	}
-}
-
-func _packet_handling(relayAddr net.UDPAddr, c net.PacketConn, buffer []byte, port int) {
-	localAddr := &net.UDPAddr{
-		IP:   net.IPv4(127, 0, 0, 1),
-		Port: port,
-	}
-
-	conn := ipv4.NewPacketConn(c)
-	if conn == nil {
-		log.Fatal("Error opening socket")
-		return
-	}
-	defer conn.Close()
-
-	if err := conn.SetControlMessage(ipv4.FlagDst|ipv4.FlagSrc, true); err != nil {
-		log.Fatal(err)
-		return
-	}
-
-	for {
-		n, cm, _, err := conn.ReadFrom(buffer[1:])
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error reading from connection:", err)
-			continue
-		}
-		if n > len(buffer)-1 {
-			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from peer. (size:"+strconv.Itoa(n)+")")
-			continue
-		}
-		dst := cm.Dst
-		src := cm.Src
-		if src.Equal(relayAddr.IP) {
-			if n == 6 {
-				addpeer(buffer)
-				continue
+	chPunch := make(chan struct{})
+	go func() {
+		punchPayload := []byte{0xCD}
+		for {
+			select {
+			case <-chPunch:
+				return
+			default:
 			}
-		}
-		// if cm == nil {
-		// 	fmt.Fprintln(os.Stderr, "Error Getting addresses", err)
-		// 	continue
-		// }
-		// if _addr.IP.Equal(relayAddr.IP) || _addr.Port == relayAddr.Port {
-		// 	if n == 6 {
-		// 		addpeer(buffer)
-		// 		continue
-		// 	}
-		// } else if _addr.IP.Equal(relayAddr.IP) && _addr.Port == relayAddr.Port {
-		// 	continue
-		// }
-		if _, exists := Peers[src.String()]; exists {
-			if n != 0 && buffer[1] == 0xCC {
-				c.WriteTo(buffer[2:n+1], localAddr)
+			for _, h := range peers {
+				c.WriteToUDP(punchPayload, &h.addr)
 			}
-			continue
+			time.Sleep(500 * time.Millisecond)
 		}
-		if localIpv4.Contains(src) {
-			buffer[0] = 0xCC
-			if peer, exists := Peers[dst.String()]; exists {
-				c.WriteTo(buffer[:n+1], &peer.addr)
-				continue
-			}
-			continue
-		}
-	}
-}
-
-func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port int) {
-	localAddr := &net.UDPAddr{
-		IP:   net.IPv4(127, 0, 0, 1),
-		Port: port,
-	}
+	}()
+	defer close(chPunch)
 
 	for {
 		n, addr, err := c.ReadFromUDP(buffer[1:])
@@ -351,22 +253,37 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 
 		if addr.IP.Equal(relayAddr.IP) || addr.Port == relayAddr.Port {
 			if n == 6 {
-				addpeer(buffer)
+				ip := make([]byte, 4)
+				copy(ip, buffer[3:7])
+				first_addr := net.IP(ip)
+				peers[addr.String()] = Peer{
+					addr: net.UDPAddr{
+						IP:   first_addr,
+						Port: int(binary.BigEndian.Uint16(buffer[1:3])),
+					},
+					Found: false,
+				}
+				fmt.Println("Peer attempting Connection:", first_addr)
 				continue
 			}
 		} else if addr.IP.Equal(relayAddr.IP) && addr.Port == relayAddr.Port {
 			continue
 		}
 
-		if _, exists := Peers[addr.IP.String()]; exists {
+		if peer, exists := peers[addr.IP.String()]; exists {
 			if n != 0 && buffer[1] == 0xCC {
+				if !peer.Found {
+					peer.Found = true
+					fmt.Println("Connected to peer:", peer.addr)
+				}
 				c.WriteToUDP(buffer[2:n+1], localAddr)
 			}
 			continue
 		}
 		if localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP) {
 			buffer[0] = 0xCC
-			for _, peer := range Peers {
+			//this causes a race condition looking for fix
+			for _, peer := range peers {
 				c.WriteToUDP(buffer[:n+1], &peer.addr)
 			}
 			continue
@@ -374,184 +291,244 @@ func packet_handling(relayAddr net.UDPAddr, c net.UDPConn, buffer []byte, port i
 	}
 }
 
-func server(port int) {
-	c, err := net.ListenPacket("udp4", "0") //net.ListenUDP("udp4", nil)
+func update(scanner *bufio.Scanner) bool {
+	httpClient := http.Client{Timeout: 2 * time.Second}
+	r, err := httpClient.Get("https://api.github.com/repos/delthas/proxypunch/releases")
 	if err != nil {
-		log.Fatal(err)
+		// throw error even if the user is just disconnected from the internet
+		fmt.Fprintln(os.Stderr, "Error while looking for updates: "+err.Error())
+		return false
 	}
-	defer c.Close()
-
-	fmt.Println("Listening, start hosting on port " + strconv.Itoa(port))
-	fmt.Println("Connecting...")
-
-	relayAddr, err := net.ResolveUDPAddr("udp4", relayHost)
+	var releases []struct {
+		TagName string `json:"tag_name"`
+		Name    string `json:"name"`
+		Assets  []struct {
+			Name        string `json:"name"`
+			DownloadUrl string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	err = decoder.Decode(&releases)
+	r.Body.Close()
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "Error while processing updates list: "+err.Error())
+		return false
 	}
-
-	//i can only assume its keeping the relay updated
-	chRelay := make(chan struct{})
-	go func() {
-		relayPayload := []byte{byte(port >> 8), byte(port)}
-		for {
-			select {
-			case <-chRelay:
-				return
-			default:
-			}
-			c.WriteTo(relayPayload, relayAddr)
-			time.Sleep(500 * time.Millisecond)
+	for _, v := range releases {
+		if v.TagName == ProgramVersion {
+			return false
 		}
-	}()
-	defer close(chRelay)
+		for _, asset := range v.Assets {
+			if strings.Contains(asset.Name, ProgramArch) {
+				update := ""
+				for update != "y" && update != "yes" && update != "n" && update != "no" {
+					fmt.Println("proxypunch update " + v.Name + " is available! Download and update now? y(es) / n(o) [yes]")
+					if !scanner.Scan() {
+						return false
+					}
+					update = strings.ToLower(scanner.Text())
+					if update == "" {
+						update = "y"
+					}
+				}
+				if update != "y" && update != "yes" {
+					return false
+				}
+				r, err = httpClient.Get(asset.DownloadUrl)
+				if err != nil {
+					// throw error even if the user is just disconnected from the internet
+					fmt.Fprintln(os.Stderr, "Error while downloading update (http get): "+err.Error())
+					return false
+				}
+				f, err := ioutil.TempFile("", "")
+				if err != nil {
+					r.Body.Close()
+					// throw error even if the user is just disconnected from the internet
+					fmt.Fprintln(os.Stderr, "Error while downloading update (file open): "+err.Error())
+					return false
+				}
+				_, err = io.Copy(f, r.Body)
+				r.Body.Close()
+				f.Close()
+				if err != nil {
+					// throw error even if the user is just disconnected from the internet
+					fmt.Fprintln(os.Stderr, "Error while downloading update (io copy): "+err.Error())
+					return false
+				}
 
-	buffer := make([]byte, 4096)
+				exe, err := os.Executable()
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "Error while downloading update (exe path get): "+err.Error())
+					return false
+				}
+				exe, err = filepath.EvalSymlinks(exe)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "Error while downloading update (exe path eval): "+err.Error())
+					return false
+				}
 
-	get_host_ip(c, *relayAddr, buffer, port)
+				var perm os.FileMode
+				if info, err := os.Stat(exe); err != nil {
+					perm = info.Mode()
+				} else {
+					perm = 0777
+				}
 
-	//pp sends this every 500 ms
-	chPunch := make(chan struct{})
-	go func() {
-		punchPayload := []byte{0xCD}
-		for {
-			select {
-			case <-chPunch:
-				return
-			default:
+				if runtime.GOOS == "windows" {
+					err = os.Rename(exe, "proxypunch_old.exe")
+					if err != nil {
+						fmt.Fprintln(os.Stderr, "Error while downloading update (move current file): "+err.Error())
+						return false
+					}
+				} else {
+					err = os.Remove(exe)
+					if err != nil {
+						fmt.Fprintln(os.Stderr, "Error while downloading update (unlink current file): "+err.Error())
+						return false
+					}
+				}
+
+				w, err := os.OpenFile(exe, os.O_RDWR|os.O_CREATE|os.O_TRUNC, perm)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "Error while downloading update (create new file): "+err.Error())
+					return false
+				}
+
+				r, err := os.Open(f.Name())
+				if err != nil {
+					w.Close()
+					fmt.Fprintln(os.Stderr, "Error while downloading update (open update file): "+err.Error())
+					return false
+				}
+
+				_, err = io.Copy(w, r)
+				r.Close()
+				w.Close()
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "Error while downloading update (copy update file): "+err.Error())
+					return false
+				}
+
+				cmd := exec.Command(exe, os.Args[1:]...)
+				cmd.Stdin = os.Stdin
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				cmd.Run()
+				return true
 			}
-			//fmt.Println("a")
-			//NOT BEING CALLED
-			for _, h := range Peers {
-				c.WriteTo(punchPayload, &h.addr)
-			}
-			time.Sleep(500 * time.Millisecond)
 		}
-	}()
-	defer close(chPunch)
-
-	_packet_handling(*relayAddr, c, buffer, port)
+	}
+	return false
 }
 
-// func server(port int) {
-// 	c, err := net.ListenUDP("udp4", nil)
-// 	if err != nil {
-// 		log.Fatal(err)
-// 	}
-// 	defer c.Close()
+func autopunch() bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return false
+	}
+	autopunchPath := filepath.Join(filepath.Dir(exe), "autopunch.exe")
+	if _, err := os.Stat(autopunchPath); err == nil {
+		return false
+	}
 
-// 	fmt.Println("Listening, start hosting on port " + strconv.Itoa(port))
-// 	fmt.Println("Connecting...")
+	httpClient := http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
+				dialer := net.Dialer{Timeout: 5 * time.Second}
+				return dialer.DialContext(ctx, network, addr)
+			},
+		},
+	}
+	r, err := httpClient.Get("https://api.github.com/repos/delthas/autopunch/releases")
+	if err != nil {
+		return false
+	}
+	var releases []struct {
+		TagName string `json:"tag_name"`
+		Name    string `json:"name"`
+		Assets  []struct {
+			Name        string `json:"name"`
+			DownloadUrl string `json:"browser_download_url"`
+			Size        int64  `json:"size"`
+		} `json:"assets"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	err = decoder.Decode(&releases)
+	r.Body.Close()
+	if err != nil {
+		return false
+	}
+	if len(releases) == 0 || len(releases[0].Assets) == 0 {
+		return false
+	}
+	asset := releases[0].Assets[0]
 
-// 	localAddr := &net.UDPAddr{
-// 		IP:   net.IPv4(127, 0, 0, 1),
-// 		Port: port,
-// 	}
+	r, err = httpClient.Get(asset.DownloadUrl)
+	if err != nil {
+		return false
+	}
+	f, err := ioutil.TempFile("", "")
+	if err != nil {
+		r.Body.Close()
+		return false
+	}
+	pr := progress.NewReader(r.Body)
 
-// 	relayAddr, err := net.ResolveUDPAddr("udp4", relayHost)
-// 	if err != nil {
-// 		log.Fatal(err)
-// 	}
+	fmt.Println("===================================================")
+	fmt.Println("proxypunch will now try to download autopunch for you (will only do that once).")
+	defer fmt.Println("===================================================")
 
-// 	chRelay := make(chan struct{})
-// 	go func() {
-// 		relayPayload := []byte{byte(port >> 8), byte(port)}
-// 		for {
-// 			select {
-// 			case <-chRelay:
-// 				return
-// 			default:
-// 			}
-// 			c.WriteToUDP(relayPayload, relayAddr)
-// 			time.Sleep(500 * time.Millisecond)
-// 		}
-// 	}()
-// 	defer close(chRelay)
+	go func() {
+		ctx := context.Background()
+		progressChan := progress.NewTicker(ctx, pr, asset.Size, 1*time.Second)
+		for p := range progressChan {
+			fmt.Printf("\rdownload: %v remaining...", p.Remaining().Round(time.Second))
+		}
+		fmt.Println("\rdownload is completed!")
+	}()
+	_, err = io.Copy(f, pr)
+	r.Body.Close()
+	f.Close()
 
-// 	var remoteAddr net.UDPAddr
-// 	buffer := make([]byte, 4096)
+	if err != nil {
+		fmt.Println("proxypunch failed downaloading autopunch; you can still download it manually")
+		fmt.Println("at: delthas.fr/proxypunch")
+		return false
+	}
 
-// 	receivedIp := false
-// 	for {
-// 		n, addr, err := c.ReadFromUDP(buffer)
-// 		if err != nil {
-// 			// err is thrown if the buffer is too small
-// 			continue
-// 		}
-// 		//If Server failed to start
-// 		if !addr.IP.Equal(relayAddr.IP) || addr.Port != relayAddr.Port {
-// 			continue
-// 		}
-// 		if n == 4 {
-// 			if !receivedIp {
-// 				receivedIp = true
-// 				ip := net.IP(buffer[:4])
-// 				fmt.Println("Connected. Ask your peer to connect to " + ip.String() + " on port " + strconv.Itoa(port) + " with proxypunch")
-// 			}
-// 			continue
-// 		}
-// 		if n != 6 {
-// 			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from relay. (size:"+strconv.Itoa(n)+")")
-// 			continue
-// 		}
-// 		ip := make([]byte, 4)
-// 		copy(ip, buffer[2:6])
-// 		remoteAddr = net.UDPAddr{
-// 			IP:   net.IP(ip),
-// 			Port: int(binary.BigEndian.Uint16(buffer[:2])),
-// 		}
-// 		break
-// 	}
+	err = os.Rename(f.Name(), autopunchPath)
+	if err != nil {
+		fmt.Println("proxypunch failed downaloading autopunch; you can still download it manually")
+		fmt.Println("at: delthas.fr/proxypunch")
+		return false
+	}
 
-// 	chPunch := make(chan struct{})
-// 	go func() {
-// 		punchPayload := []byte{0xCD}
-// 		for {
-// 			select {
-// 			case <-chPunch:
-// 				return
-// 			default:
-// 			}
-// 			c.WriteToUDP(punchPayload, &remoteAddr)
-// 			time.Sleep(500 * time.Millisecond)
-// 		}
-// 	}()
-// 	defer close(chPunch)
+	fmt.Println("download succeeded! autopunch is now available at: " + autopunchPath)
+	fmt.Println("It is highly recommended that you read the (short) instructions at delthas.fr/proxypunch")
+	fmt.Println("Note that your peer will need to switch to autopunch as well! proxypunch is only compatible with itself/")
+	fmt.Println("You can now close proxypunch.")
 
-// 	foundPeer := false
-// 	for {
-// 		n, addr, err := c.ReadFromUDP(buffer[1:])
-// 		if err != nil {
-// 			// err is thrown if the buffer is too small
-// 			continue
-// 		}
-// 		if n > len(buffer)-1 {
-// 			fmt.Fprintln(os.Stderr, "Error received packet of wrong size from peer. (size:"+strconv.Itoa(n)+")")
-// 			continue
-// 		}
-// 		if addr.IP.Equal(relayAddr.IP) && addr.Port == relayAddr.Port {
-// 			continue
-// 		}
-// 		if addr.IP.Equal(remoteAddr.IP) && addr.Port == remoteAddr.Port {
-// 			if !foundPeer {
-// 				foundPeer = true
-// 				fmt.Println("Connected to peer")
-// 			}
-// 			if n != 0 && buffer[1] == 0xCC {
-// 				c.WriteToUDP(buffer[2:n+1], localAddr)
-// 			}
-// 		} else if (localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP)) && addr.Port == port {
-// 			buffer[0] = 0xCC
-// 			c.WriteToUDP(buffer[:n+1], &remoteAddr)
-// 		}
-// 	}
-// }
+	return true
+}
 
 var ProgramVersion string
 var ProgramArch string
 
 func main() {
+	if ProgramVersion == "" {
+		ProgramVersion = "[Custom Build]"
+	}
 	fmt.Println("proxypunch " + ProgramVersion + " by delthas")
 	fmt.Println()
+
+	if runtime.GOOS == "windows" {
+		// cleanup old update file, ignore error
+		os.Remove("proxypunch_old.exe")
+	}
 
 	var mode string
 	var host string
@@ -569,6 +546,12 @@ func main() {
 	flag.Parse()
 
 	scanner := bufio.NewScanner(os.Stdin)
+
+	if !noUpdate && ProgramArch != "" && ProgramVersion != "[Custom Build]" {
+		if update(scanner) {
+			return
+		}
+	}
 
 	var config Config
 
@@ -598,13 +581,32 @@ func main() {
 		}
 	}
 
+	if !noConfig && runtime.GOOS == "windows" {
+		fmt.Println("===================================================")
+		fmt.Println("A NEW VERSION OF PROXYPUNCH IS AVAILABLE: AUTOPUNCH")
+		fmt.Println("autopunch is better and simpler than proxypunch: it is as simple as sokuroll!")
+		fmt.Println("Run an exe and that's it! the game will work without forwarding ports.")
+		fmt.Println("- no need to type an ip into another window!")
+		fmt.Println("- no need to type a different ip into the game!")
+		fmt.Println("- it has a simple window (rather than text in an ugly window)")
+		fmt.Println("- you can use it even with users who don't have it, so you can always leave it on")
+		fmt.Println("There's really no reason to use proxypunch anymore.")
+		fmt.Println("You can download it (and check out instructions) at: delthas.fr/autopunch")
+		fmt.Println("===================================================")
+		if !config.DownloadedAutopunch {
+			if autopunch() {
+				config.DownloadedAutopunch = true
+
+				if !noConfig && !noSave {
+					saveConfig(configFile, config)
+				}
+			}
+		}
+	}
+
 	saveMode := mode == ""
 	saveHost := host == ""
 	savePort := port == 0
-
-	// mode = "c"
-	// host = "181.46.178.236"
-	// port = 10800
 
 	for mode != "s" && mode != "server" && mode != "c" && mode != "client" {
 		if config.Mode != "" {
