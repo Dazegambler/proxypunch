@@ -183,8 +183,9 @@ func server(port int) {
 	type Peer struct {
 		addr  net.UDPAddr
 		Found bool
+		Ready bool
 	}
-	peers := make(map[string]Peer)
+	peers := make(map[string]*Peer)
 
 	receivedIp := false
 	for {
@@ -211,12 +212,13 @@ func server(port int) {
 		ip := make([]byte, 4)
 		copy(ip, buffer[2:6])
 		first_addr := net.IP(ip)
-		peers[addr.IP.String()] = Peer{
+		peers[addr.IP.String()] = &Peer{
 			addr: net.UDPAddr{
 				IP:   first_addr,
 				Port: int(binary.BigEndian.Uint16(buffer[:2])),
 			},
 			Found: false,
+			Ready: false,
 		}
 		fmt.Println("Peer attempting Connection:", first_addr)
 		break
@@ -257,12 +259,13 @@ func server(port int) {
 				copy(ip, buffer[3:7])
 				sec_addr := net.IP(ip)
 				if _, exists := peers[sec_addr.String()]; !exists {
-					peers[sec_addr.String()] = Peer{
+					peers[sec_addr.String()] = &Peer{
 						addr: net.UDPAddr{
 							IP:   sec_addr,
 							Port: int(binary.BigEndian.Uint16(buffer[1:3])),
 						},
 						Found: false,
+						Ready: false,
 					}
 					fmt.Println("Peer attempting Connection:", sec_addr)
 				}
@@ -273,11 +276,16 @@ func server(port int) {
 		}
 
 		if peer, exists := peers[addr.IP.String()]; exists {
+
 			if !peer.Found {
 				peer.Found = true
 				fmt.Println("Connected to peer:", peer.addr)
 			}
 			if n != 0 && buffer[1] == 0xCC {
+				if !peer.Ready && buffer[3] != 87 && buffer[4] != 9 {
+					peer.Ready = true
+					fmt.Println("Connected ingame:", peer.addr)
+				}
 				c.WriteToUDP(buffer[2:n+1], localAddr)
 			}
 			continue
@@ -285,8 +293,18 @@ func server(port int) {
 		if localIpv4.Contains(addr.IP) || localIpv6.Contains(addr.IP) {
 			buffer[0] = 0xCC
 			//this causes a race condition...looking for fix
+
 			for _, peer := range peers {
-				c.WriteToUDP(buffer[:n+1], &peer.addr)
+				if peer.Ready && (buffer[1] != 12 && buffer[2] != 0) || (buffer[1] != 4 && buffer[3] != 87) {
+					c.WriteToUDP(buffer[:n+1], &peer.addr)
+					continue
+				}
+				if !peer.Ready && (buffer[1] == 12 && buffer[2] == 0) || (buffer[1] == 4 && buffer[3] == 87) {
+					c.WriteToUDP(buffer[:n+1], &peer.addr)
+					fmt.Println("magic:", peer.addr)
+					continue
+				}
+				//c.WriteToUDP(buffer[:n+1], &peer.addr)
 			}
 			continue
 		}
